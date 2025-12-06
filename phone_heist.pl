@@ -1,12 +1,16 @@
 /*
-   Task1：深夜夺回手机文本冒险游戏
    启动游戏方式：
-    ?- set_prolog_flag(encoding, utf8).
-    ?- [phone_heist].
-    ?- start.
+    set_prolog_flag(encoding, utf8).
+    consult('E:/KR-assignment/phone_heist.pl').
+    start.
 */
 
 :- use_module(library(random)).
+
+% === Pyperplan 配置 ===
+pyperplan_exe('D:/Anaconda/Scripts/pyperplan.exe').
+pyperplan_domain('E:/KR-assignment/adversary_domain.pddl').
+
 
 :- dynamic
     i_am_at/1,        % 玩家当前所在房间
@@ -16,9 +20,15 @@
     locker_state/1,   % locker_state(locked/unlocked)
     torch_on/0,       % 手电是否打开
     turn/1,           % 动作数
-    phone_in/1,       % phone_in(drawer) 或 phone_in(locker)，仅用来测试的，实际游戏中不允许输入
+    phone_in/1,       % phone_in(drawer) 或 phone_in(locker)
     visited/1,        % 经过走廊不重复提醒
-    game_over/0.      % 判断是否已经结束
+    game_over/0,      % 判断是否已经结束
+    guard_at/1,       % 守卫当前位置
+    guard_mode/1,     % 守卫模式: patrol 或 chaser
+    caught_now/0,     % 用在 execute_catch_player/1 中的临时标记
+    guard_last_moved_turn/1,  % 守卫上一次行动的回合
+    last_guard_moved/0,       % 本回合守卫是否刚刚行动过
+    guard_patrol_index/1.     % 守卫当前在巡逻路线中的第几步
 
 :- discontiguous take/1.
 
@@ -40,6 +50,8 @@ instructions :-
     write('  start.              -- 重新开始游戏'), nl,
     write('  look.               -- 查看当前位置'), nl,
     write('  go(Room).           -- 前往相邻房间，例如 go(corridor).'), nl,
+    write('  wait.               -- 原地等待一回合，让时间悄悄流逝'), nl,
+    write('  listen.             -- 竖起耳朵听听周围有没有动静'), nl,
     write('  take(Item).         -- 拿起物品，例如 take(torch).'), nl,
     write('  drop(Item).         -- 放下物品'), nl,
     write('  inventory.          -- 查看你现在携带的东西'), nl,
@@ -50,6 +62,7 @@ instructions :-
     write('  read_notebook.      -- 阅读密码本'), nl,
     write('  use(torch).         -- 开关手电筒'), nl,
     write('  escape.             -- 在 gate 处尝试带着手机离开'), nl,
+    write('  help.               -- 随时查看本帮助信息'), nl,
     write('  halt.               -- 退出 Prolog'), nl, nl,
     write('本游戏可探索的地点包括：'), nl,
     write('  gate        —— 教学楼门口（起点与撤离点）'), nl,
@@ -59,7 +72,21 @@ instructions :-
     write('  classroom   —— 教室'), nl,
     write('  security    —— 值班室'), nl, nl,
     write('游戏目标：拿回自己的手机 phone，用 dummy_phone 调包，'), nl,
-    write('保持其他物品原样，并从 gate 安全离开。'), nl, nl.
+    write('保持其他物品原样，并从 gate 安全离开。'), nl, nl,
+    write('【保安巡逻规则】'), nl,
+    write('  值班老师会在教学楼里巡逻，按如下路线循环移动：'), nl,
+    write('    security -> corridor -> storage -> corridor -> office'), nl,
+    write('    -> corridor -> classroom -> corridor -> security -> ...'), nl,
+    write('  老师会在房间里待3个回合，移动到走廊上不会停留'), nl,
+    write('  当你拿到自己的手机后，值班老师会更加警觉，并尝试追捕你。'), nl, nl,
+    write('【回合与时间规则】'), nl,
+    write('  会消耗时间并推进回合的动作（以是否改变场上人物位置及物品状态为准）包括：'), nl,
+    write('    go, wait, take, drop, unlock, lock, open(locker) 等'), nl,
+    write('  以下动作不会消耗时间：look, listen, search, inventory, read_notebook, help 等。'), nl, nl.
+
+% 随时查看帮助（命令列表与规则说明）
+help :-
+    instructions.
 
 reset_game_state :-
     retractall(i_am_at(_)),
@@ -72,6 +99,16 @@ reset_game_state :-
     retractall(phone_in(_)),
     retractall(visited(_)),
     retractall(game_over),
+
+    % 与守卫相关的动态状态全部清除
+    retractall(guard_at(_)),
+    retractall(guard_mode(_)),
+    retractall(guard_patrol_index(_)),
+    retractall(guard_last_moved_turn(_)),
+    retractall(last_guard_moved),
+    retractall(caught_now),
+
+    % 重建世界
     init_world,
     init_phone_location.
 
@@ -90,8 +127,9 @@ init_world :-
     % 储物柜初始上锁
     assert(locker_state(locked)),
 
-    % 初始动作数量（用来限制时间的）
+    % 初始回合与守卫行动记录
     assert(turn(0)),
+    assert(guard_last_moved_turn(0)),
 
     % 地图中的固定物体
     assert(at(mat, corridor)),       % 走廊地毯
@@ -108,7 +146,12 @@ init_world :-
 
     % 办公室桌子里藏着储物室钥匙和密码本（通过 search(desk) 暴露）
     assert(at(storage_key, desk)),
-    assert(at(notebook, desk)).
+    assert(at(notebook, desk)),
+
+    % 守卫起点与模式（默认先巡逻）
+    assert(guard_at(security)),
+    assert(guard_mode(patrol)),
+    assert(guard_patrol_index(0)).
 
 % 随机决定手机在哪：抽屉 or 储物柜
 init_phone_location :-
@@ -135,6 +178,9 @@ path(classroom, corridor).
 
 path(corridor, storage).
 path(storage, corridor).
+
+path(corridor, security).
+path(security, corridor).
 
 path(storage, security).
 path(security, storage).
@@ -207,7 +253,7 @@ describe(storage) :-
     write('你隐隐约约看见一排铁皮储物柜(locker)靠墙排着，其中一个上面贴着“手机统一保管柜”。'), nl.
 
 describe(security) :-
-    write('这里是值班室(security)，里面有监控和保安。'), nl.
+    write('这里是值班室(security)，里面有手机被拿走后的报警装置。'), nl.
 
 describe(_) :-
     write('这里看起来很普通。'), nl.
@@ -227,10 +273,25 @@ go(Room) :-
     i_am_at(Here),
     ( Room = Here ->
         write('你已经在这里了。'), nl
-    ; Room = security ->
-        % 误入保安室，直接失败
-        update_turn,
-        lose('你推门走进了值班室，和保安四目相对……')
+    ;  Room = security ->
+        % 特殊处理：进入值班室
+        (   guard_at(security)
+        ->  % 保安就在值班室 → 秒抓
+            retract(i_am_at(Here)),
+            assert(i_am_at(security)),
+            lose('你推门走进了值班室，保安正坐在椅子上，抬头就看见了你。')
+        ;   % 值班室没人：保安已经出去巡逻
+            retract(i_am_at(Here)),
+            assert(i_am_at(security)),
+            write('你轻轻推开值班室的门，里面的椅子是空的，保安似乎已经出去巡逻了。'), nl,
+            (   guard_at(R)
+            ->  format('值班桌上的巡逻记录本上写着：保安刚刚朝 ~w 的方向离开。~n', [R])
+            ;   true
+            ),
+            update_turn,     % 时间流逝一回合，保安继续巡逻
+            look,
+            check_lose
+        )
     ; path(Here, Room) ->
         ( door_blocked(Room) ->
             write('门好像锁着，你需要一把钥匙。'), nl
@@ -248,6 +309,48 @@ door_blocked(office) :-
 door_blocked(storage) :-
     door_state(storage, locked), !.
 door_blocked(_Room) :- fail.
+
+/*--------------------------------------
+  wait/1, listen/0
+  --------------------------------------*/
+wait :-
+    game_running,
+    update_turn,
+    write('你屏住呼吸，原地等待了一会儿。'), nl,
+    look,
+    check_lose.    
+
+
+listen :-
+    game_running,
+    (   guard_at(Room) ->
+        current_guard_mode(Mode),
+        (   Mode = patrol
+        ->  % 巡逻模式下：根据回合数和 patrol_route 预测下一步
+            turn(N),
+            NextTurn is N + 1,
+            guard_last_moved_turn(Last),
+            patrol_route(Route),
+            guard_patrol_index(I),
+            length(Route, Len),
+            NextI is (I + 1) mod Len,
+            nth0(NextI, Route, NextRoom),
+            (   (   Room = corridor,
+                    NextTurn > Last
+                ;   Room \= corridor,
+                    NextTurn >= Last + 3
+                )
+            ->  format('你竖起耳朵，似乎从 ~w 的方向传来隐约的脚步声，像是有人正准备朝 ~w 的方向走去。~n',
+                       [Room, NextRoom])
+            ;   format('你竖起耳朵，似乎从 ~w 的方向传来隐约的脚步声。~n',
+                       [Room])
+            )
+        ;   % chaser 模式（你已经拿到手机）：不提前剧透路线，只提示脚步逼近
+            format('你竖起耳朵，~w 方向的脚步声越来越近，让你有点不安。~n', [Room])
+        )
+    ;   write('教学楼一片寂静，你暂时没有察觉到其他人的动静。'), nl
+    ).
+
 
 /*--------------------------------------
   物品：take/1, drop/1, inventory/0
@@ -529,10 +632,37 @@ game_running :-
     write('请先输入 start. 开始新的一局，或者输入 halt. 退出。'), nl,
     fail.
 
+% 判断在给定的回合数 Turn 下，守卫是否应该行动，
+% 同时更新 guard_last_moved_turn/1。
+should_guard_move(Turn) :-
+    guard_last_moved_turn(Last),
+    (   guard_at(corridor)
+    ->  % 在走廊时：只要是新回合就可以马上离开走廊
+        Turn > Last
+    ;   % 不在走廊：至少间隔 3 回合才行动一次
+        Turn >= Last + 3
+    ),
+    retract(guard_last_moved_turn(Last)),
+    assert(guard_last_moved_turn(Turn)).
+
+% 回合推进：
+% - 每次玩家做「消耗时间」的动作时调用 update_turn/0
+% - turn 递增
+% - 守卫在普通房间：3 回合一动
+%   在 corridor：下一回合必定离开（只停留 1 回合）
 update_turn :-
     retract(turn(N)),
     N1 is N + 1,
-    assert(turn(N1)).
+    assert(turn(N1)),
+    (   should_guard_move(N1)
+    ->  % 本回合守卫会动
+        retractall(last_guard_moved),
+        assert(last_guard_moved),
+        adversary_step
+    ;   % 本回合守卫不动，清空标记
+        retractall(last_guard_moved)
+    ),
+    check_guard_catch_player.
 
 check_lose :-
     turn(T),
@@ -541,6 +671,161 @@ check_lose :-
 
 check_lose :- true.
 
+/*--------------------------------------
+  守卫（巡逻 + 追捕）
+  --------------------------------------*/
+
+% 没拿到 phone 时：守卫按照预设路线巡逻
+% 拿到 phone 后：切换为追捕模式（用 PDDL 规划）
+current_guard_mode(patrol) :-
+    \+ holding(phone), !.
+current_guard_mode(chaser) :-
+    holding(phone).
+
+% 每回合守卫行动入口
+adversary_step :-
+    game_over, !.          % 游戏已结束，不再行动
+adversary_step :-
+    current_guard_mode(Mode),
+    maybe_update_guard_mode(Mode),
+    (   Mode = patrol
+    ->  guard_patrol_step           % 巡逻模式：按路线走一格
+    ;   % chaser 模式：调用 PDDL 规划
+        plan_for_guard(chaser, Plan),
+        execute_guard_action(Plan)
+    ).
+
+% 如果模式变了（例如从 patrol → chaser），更新 guard_mode/1
+maybe_update_guard_mode(Mode) :-
+    guard_mode(Mode), !.
+maybe_update_guard_mode(Mode) :-
+    retractall(guard_mode(_)),
+    assert(guard_mode(Mode)).
+
+% ---------------- 巡逻逻辑（不依赖 PDDL） ----------------
+
+% 巡逻路线序列：
+%   R0: security
+%   R1: corridor
+%   R2: storage
+%   R3: corridor
+%   R4: classroom
+%   R5: corridor
+%   R6: office
+%   R7: corridor
+patrol_route([
+    security,
+    corridor,
+    storage,
+    corridor,
+    classroom,
+    corridor,
+    office,
+    corridor
+]).
+
+% 一回合巡逻一步：
+% - guard_patrol_index(I) 表示守卫当前处在 patrol_route 中的下标 I
+% - 守卫从 Route[I] 走到 Route[(I+1) mod Len]
+guard_patrol_step :-
+    guard_patrol_index(I),
+    patrol_route(Route),
+    length(Route, Len),
+    nth0(I, Route, From),
+    NextI is (I + 1) mod Len,
+    nth0(NextI, Route, To),
+    guard_at(From),                % 双保险，确保逻辑一致
+    retract(guard_at(From)),
+    assert(guard_at(To)),
+    retract(guard_patrol_index(I)),
+    assert(guard_patrol_index(NextI)),
+    !.
+guard_patrol_step :- true.         % 理论上不会到这里，只是防御性写法
+
+% ---------------- 追捕逻辑（调用 PDDL） ----------------
+% 写出当前局面的动态追逐 problem：
+% - 守卫位置：guard_at(GRoom)
+% - 玩家位置：i_am_at(PRoom)
+% - 地图结构：和之前静态 problem 一致
+write_chaser_problem(File) :-
+    i_am_at(PRoom),
+    guard_at(GRoom),
+    open(File, write, Out),
+    format(Out, "(define (problem phone-heist-chaser-dyn)~n", []),
+    format(Out, "  (:domain phone-heist-adversary)~n~n", []),
+    format(Out, "  (:objects~n", []),
+    format(Out, "    gate corridor office classroom storage security - location~n", []),
+    format(Out, "  )~n~n", []),
+    format(Out, "  (:init~n", []),
+    format(Out, "    (guard-at ~w)~n", [GRoom]),
+    format(Out, "    (player-at ~w)~n", [PRoom]),
+    format(Out, "    (adj gate corridor)~n", []),
+    format(Out, "    (adj corridor gate)~n", []),
+    format(Out, "    (adj corridor office)~n", []),
+    format(Out, "    (adj office corridor)~n", []),
+    format(Out, "    (adj corridor classroom)~n", []),
+    format(Out, "    (adj classroom corridor)~n", []),
+    format(Out, "    (adj corridor storage)~n", []),
+    format(Out, "    (adj storage corridor)~n", []),
+    format(Out, "    (adj storage security)~n", []),
+    format(Out, "    (adj security storage)~n", []),
+    format(Out, "  )~n~n", []),
+    format(Out, "  (:goal (captured))~n", []),
+    format(Out, ")~n", []),
+    close(Out).
+
+% chaser 模式：基于当前真实位置动态生成 problem，再调用 pyperplan
+plan_for_guard(chaser, Plan) :-
+    pyperplan_exe(Exe),
+    pyperplan_domain(Domain),
+    DynProblem = 'E:/KR-assignment/adversary_problem.pddl',
+    write_chaser_problem(DynProblem),
+    catch(run_pyperplan_soln(Exe, Domain, DynProblem, Plan),
+          _Error,
+          Plan = []).
+
+% 这里只执行计划中的第一步
+execute_guard_action([]) :- !.
+execute_guard_action([Action | _]) :-
+    (   Action = move_guard(From, To) ->
+        execute_move_guard(From, To)
+    ;   Action = catch_player(Room) ->
+        execute_catch_player(Room)
+    ;   true  % 未知动作：忽略
+    ).
+
+execute_move_guard(From, To) :-
+    guard_at(From),
+    retract(guard_at(From)),
+    assert(guard_at(To)),
+    % 你也可以打印一点提示，增强紧张感：
+    % format('你隐约听到 ~w 方向传来脚步声……~n', [To]),
+    !.
+execute_move_guard(_, _) :- true.
+
+% catch_player 只是打标记，具体失败逻辑在 check_guard_catch_player 里统一处理
+execute_catch_player(_Room) :-
+    assert(caught_now).
+
+% 如果守卫和玩家在同一房间，或者刚刚发生了 catch_player，都视为被抓
+check_guard_catch_player :-
+    i_am_at(Room),
+    guard_at(Room),
+    !,
+    (   last_guard_moved
+    ->  % 本回合是守卫动过之后撞见你
+        retractall(last_guard_moved),
+        lose('你被值班老师发现了：他巡逻到这里时，正好看见了你。')
+    ;   % 本回合守卫没动，是你自己走进了老师所在的房间
+        lose('你刚走进房间，就和正在巡逻的值班老师迎面撞上了。')
+    ).
+check_guard_catch_player :-
+    retract(caught_now),
+    !,
+    retractall(last_guard_moved),
+    lose('你被值班老师发现了：他径直朝你走来，把你逮了个正着。').
+check_guard_catch_player :-
+    true.
 
 /*--------------------------------------
   escape / win / lose
@@ -554,7 +839,7 @@ item_back_ok(Item, GoodPlace) :-
         at(Item, GoodPlace)    % 或者在合理的位置
     ).
 
-% 如果有任意一个“钥匙相关物品”不在合理位置，就算 bad_keys
+% 如果有任意一个“办公室内钥匙物品”不在合理位置，就算 bad_keys
 bad_keys :-
     \+ item_back_ok(office_key, corridor)
  ;  \+ item_back_ok(storage_key, office)
@@ -575,15 +860,8 @@ bad_forbidden_items :-
  ;  ( forbidden_comic(C), \+ at(C, drawer) )
  ;  ( forbidden_phone(P), \+ at(P, locker) ).
 
-% 1. 门没锁好 → 失败
-escape :-
-    game_running,
-    i_am_at(gate),
-    bad_doors,                     % 至少有一个门是 unlocked
-    !,
-    lose('第二天老师来学校时发现办公室或储物室的门没有锁好，很快就追查到了你。').
 
-% 2. 钥匙 / 密码本没放回合理位置 → 失败
+% 1. 钥匙 / 密码本没放回合理位置 → 失败
 escape :-
     game_running,
     i_am_at(gate),
@@ -591,7 +869,7 @@ escape :-
     !,
     lose('第二天老师发现钥匙或密码本不在平时的位置，觉得非常可疑，最后查到了你头上。').
 
-% 3. 违禁品动过手脚（拿走、乱放） → 失败
+% 2. 违禁品动过手脚（拿走、乱放） → 失败
 escape :-
     game_running,
     i_am_at(gate),
@@ -599,7 +877,7 @@ escape :-
     !,
     lose('第二天老师清点被没收的物品时发现数量不对或摆放位置异常，你很快就成为最大嫌疑人。').
 
-% 4. 没有替换备用机
+% 3. 没有替换备用机
 escape :-
     game_running,
     i_am_at(gate),
@@ -609,7 +887,7 @@ escape :-
     ),
     !.
 
-% 5. 人不在 gate，不能离开
+% 4. 人不在 gate，不能离开
 escape :-
     game_running,
     write('你现在还不在可以离开的地方。'), nl.
@@ -645,3 +923,9 @@ lose(Reason) :-
     write('你失败了：'), nl,
     write(Reason), nl, nl,
     write('游戏结束，如需再玩一局，请输入 start. 重新开始，或输入 halt. 退出 Prolog。'), nl.
+
+
+where_is_guard :-
+    guard_at(R),
+    turn(T),
+    format('回合 ~w：守卫在 ~w~n', [T, R]).
