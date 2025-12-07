@@ -6,6 +6,7 @@
 */
 
 :- use_module(library(random)).
+:- use_module(pyperplan_runner).
 
 % === Pyperplan 配置 ===
 pyperplan_exe('D:/Anaconda/Scripts/pyperplan.exe').
@@ -25,7 +26,6 @@ pyperplan_domain('E:/KR-assignment/adversary_domain.pddl').
     game_over/0,      % 判断是否已经结束
     guard_at/1,       % 守卫当前位置
     guard_mode/1,     % 守卫模式: patrol 或 chaser
-    caught_now/0,     % 用在 execute_catch_player/1 中的临时标记
     guard_last_moved_turn/1,  % 守卫上一次行动的回合
     last_guard_moved/0,       % 本回合守卫是否刚刚行动过
     guard_patrol_index/1.     % 守卫当前在巡逻路线中的第几步
@@ -106,7 +106,6 @@ reset_game_state :-
     retractall(guard_patrol_index(_)),
     retractall(guard_last_moved_turn(_)),
     retractall(last_guard_moved),
-    retractall(caught_now),
 
     % 重建世界
     init_world,
@@ -770,7 +769,7 @@ write_chaser_problem(File) :-
     format(Out, "    (adj storage security)~n", []),
     format(Out, "    (adj security storage)~n", []),
     format(Out, "  )~n~n", []),
-    format(Out, "  (:goal (captured))~n", []),
+    format(Out, "  (:goal (guard-at ~w))~n", [PRoom]),
     format(Out, ")~n", []),
     close(Out).
 
@@ -779,20 +778,24 @@ plan_for_guard(chaser, Plan) :-
     pyperplan_exe(Exe),
     pyperplan_domain(Domain),
     DynProblem = 'E:/KR-assignment/adversary_problem.pddl',
+    write('DEBUG: writing dynamic chaser problem: '), writeln(DynProblem), 
     write_chaser_problem(DynProblem),
+    write('DEBUG: calling pyperplan...'), nl,
     catch(run_pyperplan_soln(Exe, Domain, DynProblem, Plan),
-          _Error,
-          Plan = []).
+          Error,
+          ( write('DEBUG: pyperplan error: '), writeln(Error), Plan = [] )).
 
 % 这里只执行计划中的第一步
 execute_guard_action([]) :- !.
-execute_guard_action([Action | _]) :-
+execute_guard_action([Action | Rest]):-
+    write('DEBUG: Executing guard action:'), write(Action), nl,
+    write('DEBUG:Remaining plan:'), write(Rest), nl,
     (   Action = move_guard(From, To) ->
         execute_move_guard(From, To)
-    ;   Action = catch_player(Room) ->
-        execute_catch_player(Room)
-    ;   true  % 未知动作：忽略
+    ;   true    
     ).
+
+
 
 execute_move_guard(From, To) :-
     guard_at(From),
@@ -803,27 +806,49 @@ execute_move_guard(From, To) :-
     !.
 execute_move_guard(_, _) :- true.
 
-% catch_player 只是打标记，具体失败逻辑在 check_guard_catch_player 里统一处理
-execute_catch_player(_Room) :-
-    assert(caught_now).
+% 根据“是谁先动”的不同，输出不同的抓捕文案
+% Source 取值：
+%   planner     —— 来自 PDDL 的显式 catch_player（他径直朝你走来）
+%   guard_move  —— 守卫本回合移动后，和你同处一室
+%   player_move —— 你本回合移动后，撞上了守卫
 
-% 如果守卫和玩家在同一房间，或者刚刚发生了 catch_player，都视为被抓
+execute_catch_player(planner) :-
+    % PDDL 显式 catch_player：他就是冲你来的
+    retractall(last_guard_moved),
+    lose('你被值班老师发现了：他径直朝你走来，把你逮了个正着。').
+
+execute_catch_player(guard_move) :-
+    % 守卫本回合刚动过，走到你所在的房间
+    retractall(last_guard_moved),
+    lose('你被值班老师发现了：他巡逻到这里时，正好看见了你。').
+
+execute_catch_player(player_move) :-
+    % 守卫没动，是你自己走进老师所在的房间
+    lose('你刚走进房间，就和正在巡逻的值班老师迎面撞上了。').
+
+
 check_guard_catch_player :-
     i_am_at(Room),
     guard_at(Room),
     !,
-    (   last_guard_moved
-    ->  % 本回合是守卫动过之后撞见你
-        retractall(last_guard_moved),
-        lose('你被值班老师发现了：他巡逻到这里时，正好看见了你。')
-    ;   % 本回合守卫没动，是你自己走进了老师所在的房间
-        lose('你刚走进房间，就和正在巡逻的值班老师迎面撞上了。')
+    current_guard_mode(Mode),
+    (   Mode = patrol
+    ->  % 巡逻模式：沿用之前的逻辑
+        (   last_guard_moved
+        ->  % 守卫本回合移动后撞见你
+            execute_catch_player(guard_move)
+        ;   % 守卫没动，是你自己走进老师所在的房间
+            execute_catch_player(player_move)
+        )
+    ;   Mode = chaser
+    ->  % 追捕模式：遇到就按“planner 抓捕”处理
+        (   last_guard_moved
+        ->  % 守卫本回合是按 PDDL 计划移动到你所在的房间
+            execute_catch_player(planner)
+        ;   % 守卫没动，是你自己撞上他
+            execute_catch_player(player_move)
+        )
     ).
-check_guard_catch_player :-
-    retract(caught_now),
-    !,
-    retractall(last_guard_moved),
-    lose('你被值班老师发现了：他径直朝你走来，把你逮了个正着。').
 check_guard_catch_player :-
     true.
 

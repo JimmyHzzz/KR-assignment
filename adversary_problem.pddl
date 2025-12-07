@@ -6,7 +6,7 @@
   )
 
   (:init
-    (guard-at classroom)
+    (guard-at corridor)
     (player-at corridor)
     (adj gate corridor)
     (adj corridor gate)
@@ -20,5 +20,5 @@
     (adj security storage)
   )
 
-  (:goal (captured))
+  (:goal (guard-at corridor))
 )

@@ -26,14 +26,4 @@
       (guard-at ?to)
     )
   )
-
-  ;; 守卫在和玩家同一房间时抓住玩家（chaser 模式）
-  (:action catch_player
-    :parameters (?r - location)
-    :precondition (and
-      (guard-at ?r)
-      (player-at ?r)
-    )
-    :effect (captured)
-  )
 )
