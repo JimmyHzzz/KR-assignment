@@ -6,7 +6,7 @@
   )
 
   (:init
-    (guard-at corridor)
+    (guard-at storage)
     (player-at corridor)
     (adj gate corridor)
     (adj corridor gate)
