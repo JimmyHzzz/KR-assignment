@@ -6,8 +6,8 @@
   )
 
   (:init
-    (guard-at storage)
-    (player-at corridor)
+    (guard-at office)
+    (player-at classroom)
     (adj gate corridor)
     (adj corridor gate)
     (adj corridor office)
@@ -20,5 +20,5 @@
     (adj security storage)
   )
 
-  (:goal (guard-at corridor))
+  (:goal (guard-at classroom))
 )

@@ -1,7 +1,10 @@
 /*
-   启动游戏方式：
+   
+    How to start this game:
+
     set_prolog_flag(encoding, utf8).
-    consult('E:/KR-assignment/phone_heist.pl').
+    consult('mobile_rescue.pl').
+    consult('pyperplan_runner.pl').
     start.
 */
 
@@ -9,7 +12,7 @@
 :- use_module(pyperplan_runner).
 :- use_module(library(filesex)).
 
-% === 项目相对路径工具 ===
+% === Generate Relative Path ===
 project_dir(Dir) :-
     source_file(start, File),
     file_directory_name(File, Dir).
@@ -18,84 +21,84 @@ project_file(Rel, Abs) :-
     project_dir(Dir),
     directory_file_path(Dir, Rel, Abs).
 
-% === Pyperplan 配置（相对路径）===
+% === Pyperplan Configuration ===
 pyperplan_exe('pyperplan.exe').
 pyperplan_domain('adversary_domain.pddl').
 
 :- dynamic
-    i_am_at/1,        % 玩家当前所在房间
-    at/2,             % at(物品, 位置)
-    holding/1,        % 玩家身上的物品
+    i_am_at/1,        % player cuurent locatoin
+    at/2,             % where object at
+    holding/1,        % inventory
     door_state/2,     % door_state(Room, locked/unlocked)
     locker_state/1,   % locker_state(locked/unlocked)
-    locker_password/1, %  本局储物柜六位数密码（字符串）
-    torch_on/0,       % 手电是否打开
-    turn/1,           % 动作数
-    phone_in/1,       % phone_in(drawer) 或 phone_in(locker)
-    visited/1,        % 经过走廊不重复提醒
-    game_over/0,      % 判断是否已经结束
-    guard_at/1,       % 守卫当前位置
-    guard_mode/1,     % 守卫模式: patrol 或 chaser
-    guard_last_moved_turn/1,  % 守卫上一次行动的回合
-    last_guard_moved/0,       % 本回合守卫是否刚刚行动过
-    guard_patrol_index/1.     % 守卫当前在巡逻路线中的第几步
+    locker_password/1, %  locker 6 digit password
+    torch_on/0,       % flashlight on
+    turn/1,           % current turn number
+    phone_in/1,       % where phone at
+    visited/1,        % if corridor is visited
+    game_over/0,      % game over flag
+    guard_at/1,       % where guard at
+    guard_mode/1,     % guard moede(patrol/chaser)
+    guard_last_moved_turn/1,  % last turn guard moved
+    last_guard_moved/0,       % if guard has moved in last turn
+    guard_patrol_index/1.     % index for patrol route
 
 :- discontiguous take/1.
 
-/*--------------------------------------
-  入口：start/0 & instructions/0，初始化游戏状态、打印游戏说明、描述当前房间
-  --------------------------------------*/
 
+% start game
 start :-
     reset_game_state,
     instructions,
     look.
 
+% show instructions
 instructions :-
     nl,
-    write('【夺回手机大作战】'), nl,
-    write('你是高三学生「可汗」，手机被班主任没收。'), nl,
-    write('深夜，你翻墙潜入教学楼，准备拿回自己的手机，并用备用机调包。'), nl, nl,
-    write('可用命令：'), nl,
-    write('  start.              -- 重新开始游戏'), nl,
-    write('  look.               -- 查看当前位置'), nl,
-    write('  go(Room).           -- 前往相邻房间，例如 go(corridor).'), nl,
-    write('  wait.               -- 原地等待一回合，让时间悄悄流逝'), nl,
-    write('  listen.             -- 竖起耳朵听听周围有没有动静'), nl,
-    write('  take(Item).         -- 拿起物品，例如 take(torch).'), nl,
-    write('  drop(Item).         -- 放下物品'), nl,
-    write('  inventory.          -- 查看你现在携带的东西'), nl,
-    write('  search(Thing).      -- 搜索某个东西，例如 search(mat).'), nl,
-    write('  unlock(Room).       -- 用钥匙开房门，例如 unlock(office).'), nl,
-    write('  lock(Room).         -- 离开后把门重新锁好，例如 lock(office).'), nl,
-    write('  open(locker).       -- 尝试打开储物柜（需要密码）'), nl,
-    write('  use(torch).         -- 开关手电筒'), nl,
-    write('  escape.             -- 在 gate 处尝试带着手机离开'), nl,
-    write('  help.               -- 随时查看本帮助信息'), nl,
-    write('  halt.               -- 退出 Prolog'), nl, nl,
-    write('本游戏可探索的地点包括：'), nl,
-    write('  gate        —— 教学楼门口（起点与撤离点）'), nl,
-    write('  corridor    —— 三楼走廊（连接所有房间）'), nl,
-    write('  office      —— 班主任办公室（可能藏有你的手机）'), nl,
-    write('  storage     —— 储物室（统一保管手机的柜子,也可能藏有你的手机）'), nl,
-    write('  classroom   —— 教室'), nl,
-    write('  security    —— 值班室'), nl, nl,
-    write('游戏目标：拿回自己的手机 phone，用 dummy_phone 调包，'), nl,
-    write('保持其他物品原样，并从 gate 安全离开。'), nl, nl,
-    write('【保安巡逻规则】'), nl,
-    write('  值班老师会在教学楼里巡逻，按如下路线循环移动：'), nl,
+    write('[Mobile Rescue]'), nl,
+    write('You are a Chinese high school student who has just handed in your smartphone.'), nl,
+    write('In midnight, you sneaked into the teaching building and tried to swap your smartphone with a dummy phone.'), nl, nl,
+    write('1. Actions'), nl,
+    write('  start.              -- Restart Game'), nl,
+    write('  look.               -- Observe the surroundings'), nl,
+    write('  go(Room).           -- Move to an adjacent room, e.g. go(corridor).'), nl,
+    write('  wait.               -- Wait for a round and do nothing'), nl,
+    write('  listen.             -- Listen to the footsteps of the guard'), nl,
+    write('  take(Item).         -- Take item, e.g. take(torch).'), nl,
+    write('  drop(Item).         -- Drop item'), nl,
+    write('  inventory.          -- Check inventory'), nl,
+    write('  search(Thing).      -- Seerch an object, e.g. search(mat).'), nl,
+    write('  unlock(Room).       -- Unlock a door with a key, e.g. unlock(office).'), nl,
+    write('  lock(Room).         -- Lock a door with a key, e.g. lock(office).'), nl,
+    write('  open(locker).       -- Open a locker (password required)'), nl,
+    write('  use(torch).         -- Turn on/off the flashlight'), nl,
+    write('  escape.             -- Escape from the gate'), nl,
+    write('  help.               -- Check instructions'), nl,
+    write('  halt.               -- Exit Prolog'), nl, nl,
+    write('2. Rooms in this game'), nl,
+    write('  gate        -- Where the player is spawned and escapes'), nl,
+    write('  corridor    -- A corridor that connects to all rooms'), nl,
+    write('  office      -- Office (Your cellphone might be kept here)'), nl,
+    write('  storage     -- Storage (Your cellphone might be kept here)'), nl,
+    write('  classroom   -- Classrooom'), nl,
+    write('  security    -- Security'), nl, nl,
+    write('3. Goal: Swap your cellphone with a dummy phone'), nl,
+    write('Keep other things as they were, and leave safely from the gate'), nl, nl,
+    write('4. Adversary Behaviour:'), nl,
+    write('  The guard will patrol the teaching building according to the following fixed route:'), nl,
     write('    security -> corridor -> storage -> corridor -> office'), nl,
     write('    -> corridor -> classroom -> corridor -> security -> ...'), nl,
-    write('  老师会在房间里待3个回合，移动到走廊上不会停留'), nl,
-    write('  当你拿到自己的手机后，值班老师会更加警觉，并尝试追捕你。'), nl, nl,
-    write('【回合与时间规则】'), nl,
-    write('  会消耗时间并推进回合的动作（以是否改变场上人物位置及物品状态为准）包括：'), nl,
-    write('    go, wait, take, drop, unlock, lock, open(locker) 等'), nl,
-    write('  以下动作不会消耗时间：look, listen, search, inventory, read_notebook, help 等。'), nl, nl.
+    write('  The adversay will freeze for 3 rounds whenever enters a new room (corridor excluded)'), nl,
+    write('  When you have obtained your phone, the guard is aware of where you at, and starts to chase after you'), nl, nl,
+    write('5. Rounds each action costs:'), nl,
+    write('  Actions that cost 1 round:'), nl,
+    write('    go, wait, take, drop, unlock, lock, open(locker), ...'), nl,
+    write('  Actions that cost 0 rounds: look, listen, search, inventory, read_notebook, help, ...'), nl, nl.
 
 help :-
     instructions.
 
+% reset game state
 reset_game_state :-
     retractall(i_am_at(_)),
     retractall(at(_,_)),
@@ -118,20 +121,25 @@ reset_game_state :-
     init_world,
     init_phone_location.
 
+% initialization
 init_world :-
+    % player state
     assert(i_am_at(gate)),
     assert(holding(dummy_phone)),
     assert(holding(torch)),
+    assert(holding(phone)),
 
+    % door state
     assert(door_state(office, locked)),
     assert(door_state(storage, locked)),
 
     assert(locker_state(locked)),
-    % 每局随机生成六位数密码（字符串，含前导0）
+    % generate random 6-digit password with 0 paddings
     random_between(0, 999999, PNum),
     format(string(PassStr), "~|~`0t~d~6+", [PNum]),
     assert(locker_password(PassStr)),
 
+    % game state
     assert(turn(0)),
     assert(guard_last_moved_turn(0)),
 
@@ -151,6 +159,7 @@ init_world :-
 
     init_guard_random.
 
+% random phone location
 init_phone_location :-
     random_between(0, 1, R),
     ( R = 0 ->
@@ -160,9 +169,7 @@ init_phone_location :-
         assert(at(phone, locker))
     ).
 
-/*--------------------------------------
-  地图：path/2
-  --------------------------------------*/
+% define room connectivity
 
 path(gate, corridor).
 path(corridor, gate).
@@ -182,9 +189,7 @@ path(security, corridor).
 path(storage, security).
 path(security, storage).
 
-/*--------------------------------------
-  needs_light/1
-  --------------------------------------*/
+% define which rooms are dark and need flashlight
 
 needs_light(corridor).
 needs_light(office).
@@ -195,9 +200,7 @@ can_see(Room) :-
     torch_on.
 can_see(_Room).
 
-/*--------------------------------------
-  look/0, describe/1, notice_objects_at/1
-  --------------------------------------*/
+% look and describe actions
 
 look :-
     i_am_at(Place),
@@ -205,48 +208,48 @@ look :-
         describe(Place),
         nl,
         notice_objects_at(Place)
-    ;   write('这里一片漆黑，什么也看不清。也许需要手电筒。'), nl
+    ;   write('It is dark here, try using a flashlight.'), nl
     ),
     nl.
 
 describe(gate) :-
-    write('你站在教学楼的大门(gate)，楼道灯昏黄，外面是空荡荡的操场。'), nl,
+    write('You are standing in front of the teaching building,'), nl,
     (   visited(gate) -> true
-    ;   write('你需要走上三楼的走廊，因为班主任办公室在那里。'), nl,
+    ;   write('you nned to go to the corridor to find clues about your phone.'), nl,
         assert(visited(gate))
     ).
 
 describe(corridor) :-
-    write('你来到三楼走廊(corridor)，两边是锁着的教室门。'), nl,
-    write('尽头有：班主任办公室(office)、储物室(storage)，'), nl,
-    write('以及写着"值班室"的房间(security)。'), nl,
+    write('You have reached the corridor, the classroom in on your left side,'), nl,
+    write('The office and the storage room lie at the end of the corridor'), nl,
+    write('Besides them is the security room'), nl,
     (   visited(corridor) -> true
-    ;   write('在班主任办公室的门口铺着一块有点旧的地毯(mat)，'), nl,
-        write('根据你平常的观察，你知道办公室门的钥匙就藏在地毯下面。'), nl,
+    ;   write('There is a slightly worn mat at the door of the office'), nl,
+        write('It seems there is something under the mat'), nl,
         assert(visited(corridor))
     ).
 
 describe(office) :-
-    write('这里是班主任的办公室(office)。'), nl,
-    write('班主任的桌子(desk)就在你眼前，桌边有个抽屉(drawer)。'), nl.
+    write('This is the office room'), nl,
+    write('There is a desk with a drawer in the office room'), nl.
 
 describe(classroom) :-
-    write('这里是一间教室(classroom)，空荡荡的桌椅和写满公式的黑板。'), nl,
-    write('有些课本和练习册散落在桌上，看起来和你的手机无关。'), nl.
+    write('This is the classroom'), nl,
+    write('There is only empty chairs and desks here, nothing seems relevant to your phone'), nl.
 
 describe(storage) :-
-    write('这里是储物室(storage)，堆满了纸箱和旧设备。'), nl,
-    write('你隐隐约约看见一排铁皮储物柜(locker)靠墙排着，其中一个上面贴着“手机统一保管柜”。'), nl.
+    write('This is the storage room, filled with odds and ends'), nl,
+    write('You can see there is a locker with a note on it, it says \'Smartphones\''), nl.
 
 describe(security) :-
-    write('这里是值班室(security)，里面有手机被拿走后的报警装置。'), nl.
+    write('This is the security room'), nl.
 
 describe(_) :-
-    write('这里看起来很普通。'), nl.
+    write('Nothing special here'), nl.
 
 notice_objects_at(Place) :-
     at(X, Place),
-    write('这里有一个 '), write(X), write('。'), nl,
+    write('Here is a '), write(X), write('.'), nl,
     fail.
 notice_objects_at(_).
 
@@ -258,53 +261,51 @@ go(Room) :-
     game_running,
     i_am_at(Here),
     ( Room = Here ->
-        write('你已经在这里了。'), nl, !
-    ; Room = security ->
-        % ✅ 修复点1：必须检查合法 path，不能任何地方直达
+        write('You are already here'), nl, !
+    ; Room = security -> % security room
         (   path(Here, security)
-        ->  (   guard_at(security)
+        ->  (   guard_at(security) % guard inside
             ->  retract(i_am_at(Here)),
                 assert(i_am_at(security)),
-                lose('你推门走进了值班室，保安正坐在椅子上，抬头就看见了你。')
+                lose('You stepped into the security room while the guard is inside. He caught you immediately.')
             ;   retract(i_am_at(Here)),
-                assert(i_am_at(security)),
-                write('你轻轻推开值班室的门，里面的椅子是空的，保安似乎已经出去巡逻了。'), nl,
+                assert(i_am_at(security)), % guard outside
+                write('You entered the security room while the guard is on his patrol.'), nl,
                 (   guard_at(R)
-                ->  format('值班桌上的巡逻记录本上写着：保安刚刚朝 ~w 的方向离开。~n', [R])
+                ->  format('The log book says the guard has just left for ~w. ~n', [R])
                 ;   true
                 ),
                 update_turn,
                 look,
                 check_lose
             )
-        ;   write('你没法直接到那个地方。'), nl
+        ;   write('You can\'t reach there from here.'), nl
         )
     ; path(Here, Room) ->
         ( door_blocked(Room) ->
-            write('门好像锁着，你需要一把钥匙。'), nl
+            write('The door is locked, you need a key'), nl
         ; retract(i_am_at(Here)),
           assert(i_am_at(Room)),
           update_turn,
           look,
           check_lose
         )
-    ; write('你没法直接到那个地方。'), nl
+    ; write('You can\'t reach there from here'), nl
     ).
 
+% if door is locked
 door_blocked(office) :-
     door_state(office, locked), !.
 door_blocked(storage) :-
     door_state(storage, locked), !.
 door_blocked(_Room) :- fail.
 
-/*--------------------------------------
-  wait/0, listen/0
-  --------------------------------------*/
+% wait and listen actions
 
 wait :-
     game_running,
     update_turn,
-    write('你屏住呼吸，原地等待了一会儿。'), nl,
+    write('You held your breathe and waited for a while.'), nl,
     look,
     check_lose.
 
@@ -313,7 +314,7 @@ listen :-
     (   guard_at(Room) ->
         current_guard_mode(Mode),
         (   Mode = patrol
-        ->  turn(N),
+        ->  turn(N), % patrol mode
             NextTurn is N + 1,
             guard_last_moved_turn(Last),
             patrol_route(Route),
@@ -325,26 +326,27 @@ listen :-
                     NextTurn > Last
                 ;   Room \= corridor,
                     NextTurn >= Last + 3
-                )
-            ->  format('你竖起耳朵，似乎从 ~w 的方向传来隐约的脚步声，像是有人正准备朝 ~w 的方向走去。~n',
+                ) % guard can move next turn
+            ->  format('You can hear footsteps from the ~w, it\'s like someone is heading towards the ~w. ~n',
                        [Room, NextRoom])
-            ;   format('你竖起耳朵，似乎从 ~w 的方向传来隐约的脚步声。~n', [Room])
-            )
-        ;   format('你竖起耳朵，~w 方向的脚步声越来越近，让你有点不安。~n', [Room])
+            ;   format('You listened carefully, you can hear footsteps from the ~w. ~n', [Room])
+            ) % chaser mode
+        ;   format('Foorsteps from the ~w are getting closer, you feel nervous. ~n', [Room])
         )
-    ;   write('教学楼一片寂静，你暂时没有察觉到其他人的动静。'), nl
+    ;   write('It\'s quiet here.'), nl
     ).
 
 /*--------------------------------------
-  物品：take/1, drop/1, inventory/0
+  take and drop actions
   --------------------------------------*/
 
-% ✅ 修改点4：不可拿起的固定物
+% items that are too heavy to be picked up
 unpickable(desk).
 unpickable(drawer).
 unpickable(locker).
-unpickable(mat).        % 可留可删：地毯一般也不让拿
+unpickable(mat).
 
+% if item is reachable
 reachable(Item, Place) :-
     at(Item, Place)
  ;  ( at(drawer, Place),  at(Item, drawer) )
@@ -353,43 +355,42 @@ reachable(Item, Place) :-
 take(X) :-
     game_running,
     holding(X),
-    write('你已经拿着它了。'), nl, !.
+    write('You already have it in your invetory.'), nl, !.
 
-% ✅ 修改点4：拦截固定物
 take(Item) :-
     game_running,
     unpickable(Item),
-    write('这个东西太大/固定在原处，你没法把它拿起来。'), nl, !.
+    write('You can\'t pick this thing up.'), nl, !.
 
-forbidden_comic(confiscated_comics).
-forbidden_comic(confiscated_magazines).
+confiscated_comic(confiscated_comics).
+confiscated_comic(confiscated_magazines).
 
-forbidden_phone(other_phone1).
-forbidden_phone(other_phone2).
-forbidden_phone(other_phone3).
+confiscated_phones(other_phone1).
+confiscated_phones(other_phone2).
+confiscated_phones(other_phone3).
 
 take(Item) :-
     game_running,
-    forbidden_comic(Item),
+    confiscated_comic(Item),
     i_am_at(Place),
     reachable(Item, Place),
     retract(at(Item, _)),
     assert(holding(Item)),
     update_turn,
-    write('你拿起了 '), write(Item), write('。'), nl,
-    write('总觉得这样做有点危险，如果不放回去，明早可能会被发现……'), nl,
+    write('You have picked up '), write(Item), write('.'), nl,
+    write('Feels weird. If you don\'t return it, the teachers might found out tomorrow......'), nl,
     check_lose, !.
 
 take(Item) :-
     game_running,
-    forbidden_phone(Item),
+    confiscated_phones(Item),
     i_am_at(Place),
     reachable(Item, Place),
     retract(at(Item, _)),
     assert(holding(Item)),
     update_turn,
-    write('你偷偷拿起了别人的手机 '), write(Item), write('。'), nl,
-    write('如果不放回原位，明早统一清点时一定会出事。'), nl,
+    write('You have picked up someone else\'s cellphone, '), write(Item), write('.'), nl,
+    write('Feels weird. If you don\'t return it, the teachers might found out tomorrow......'), nl,
     check_lose, !.
 
 take(X) :-
@@ -399,12 +400,12 @@ take(X) :-
     retract(at(X, _)),
     assert(holding(X)),
     update_turn,
-    write('你拿起了 '), write(X), write('。'), nl,
+    write('You have picked up '), write(X), write('.'), nl,
     check_lose, !.
 
 take(X) :-
     game_running,
-    write('你在这里看不到 '), write(X), write('。'), nl.
+    write('You can\'t pick up '), write(X), write(' here'), nl.
 
 drop(X) :-
     holding(X),
@@ -412,17 +413,17 @@ drop(X) :-
     retract(holding(X)),
     assert(at(X, Place)),
     update_turn,
-    write('你放下了 '), write(X), write('。'), nl,
+    write('You have dropped down '), write(X), write('.'), nl,
     check_lose, !.
 
 drop(_) :-
-    write('你手上没有这个东西。'), nl.
+    write('You can\'t drop something you don\'t have.'), nl.
 
 inventory :-
     ( holding(_) ->
-        write('你现在拿着：'), nl,
+        write('You are now holding:'), nl,
         list_holding
-    ;   write('你手上什么也没有。'), nl
+    ;   write('Nothing in your hands now.'), nl
     ).
 
 list_holding :-
@@ -431,10 +432,9 @@ list_holding :-
     fail.
 list_holding.
 
-/*--------------------------------------
-  搜索 & 解锁 & 打开 & 阅读 & 使用
-  --------------------------------------*/
+% search, unlock, open, and use actions
 
+% see what's inside a container
 print_contents(Container) :-
     (   at(Item, Container),
         write('  - '), write(Item), nl,
@@ -446,9 +446,9 @@ search(mat) :-
     i_am_at(corridor),
     at(mat, corridor),
     ( at(office_key, corridor) ->
-        write('你又掀了一遍地毯，下面已经没有别的东西了。'), nl
+        write('There\'s nothing here'), nl
     ;   assert(at(office_key, corridor)),
-        write('你掀开地毯，在下面摸到了一把小钥匙(office_key)。'), nl
+        write('Under the mat, you found the (office_key).'), nl
     ), !.
 
 search(desk) :-
@@ -462,11 +462,11 @@ search(desk) :-
         retract(at(notebook, desk)),
         assert(at(notebook, office))
     ; true ),
-    write('你翻了翻桌上的资料，找到了一把储物室的钥匙(storage_key)和一本密码本(notebook)。'), nl, !.
+    write('You searched the desk and found the (storage_key) and a (notebook).'), nl, !.
 
 search(desk) :-
     i_am_at(office),
-    write('你又翻了一遍桌子，没找到新的东西。'), nl, !.
+    write('Nothing\'s new here.'), nl, !.
 
 search(drawer) :-
     i_am_at(office),
@@ -474,10 +474,10 @@ search(drawer) :-
       at(phone, drawer) ->
         retract(at(phone, drawer)),
         assert(at(phone, office)),
-        write('你拉开抽屉，里面有一堆作业本和——你的手机(phone)！'), nl
-    ;   write('你拉开抽屉，里面有一堆作业本和一些被没收的东西。看样子你的手机并不在这里！'), nl
+        write('You opened the drawer and found your phone here!'), nl
+    ;   write('You opened the drawer. It\'s filled with homeworks and magazines. But your phone is not here.'), nl
     ),
-    write('抽屉里目前还有：'), nl,
+    write('Thing inside the drawer'), nl,
     print_contents(drawer),
     !.
 
@@ -489,12 +489,12 @@ search(notebook) :-
     ;   reachable(notebook, Place)
     ),
     locker_password(PassStr),
-    write('你翻了翻密码本(notebook)，上面写着：'), nl,
-    format('"手机柜密码：~w。不要忘了。\"~n', [PassStr]),
+    write('You searched the (notebook), it says'), nl,
+    format('"Locker Password: ~w"~n', [PassStr]),
     !.
 
 search(_) :-
-    write('你随便翻找了一下，但没有什么特别的收获。'), nl.
+    write('Nothing intersting here'), nl.
 
 unlock(office) :-
     i_am_at(corridor),
@@ -503,7 +503,7 @@ unlock(office) :-
     retract(door_state(office, locked)),
     assert(door_state(office, unlocked)),
     update_turn,
-    write('你用办公室钥匙打开了办公室的门。'), nl,
+    write('You have unlocked the office door'), nl,
     check_lose, !.
 
 unlock(storage) :-
@@ -513,11 +513,11 @@ unlock(storage) :-
     retract(door_state(storage, locked)),
     assert(door_state(storage, unlocked)),
     update_turn,
-    write('你用储物室钥匙打开了储物室的门。'), nl,
+    write('You have unlocked the storage room'), nl,
     check_lose, !.
 
 unlock(_) :-
-    write('你似乎不在正确的门口，或者你没有对应的钥匙。'), nl.
+    write('You don\'t have the correct key to this room or you are not at the door'), nl.
 
 lock(office) :-
     game_running,
@@ -527,7 +527,7 @@ lock(office) :-
     retract(door_state(office, unlocked)),
     assert(door_state(office, locked)),
     update_turn,
-    write('你轻手轻脚地把办公室的门重新锁好。'), nl,
+    write('You locked the office door carefully without making a noise'), nl,
     check_lose, !.
 
 lock(storage) :-
@@ -538,80 +538,81 @@ lock(storage) :-
     retract(door_state(storage, unlocked)),
     assert(door_state(storage, locked)),
     update_turn,
-    write('你轻手轻脚地把储物室的门重新锁好。'), nl,
+    write('You locked the storage door carefully without making a noise'), nl,
     check_lose, !.
 
 lock(_) :-
     game_running,
-    write('现在不适合锁门：要么门本来就锁着，要么你不在门口，或者你没有对应的钥匙。'), nl.
+    write('You don\'t have the correct key to this room or you are not at the door'), nl.
 
 open(locker) :-
     i_am_at(storage),
     locker_state(unlocked),
-    write('柜门已经是开着的，里面有：'), nl,
+    write('The locker is opened, with a list of things:'), nl,
     print_contents(locker),
     !.
 
 open(locker) :-
     i_am_at(storage),
     locker_state(locked),
-    write('储物柜有一个六位数密码锁。请输入密码：'), nl,
+    write('Please enter the 6 digit password:'), nl,
     read(UserInput),
     term_string(UserInput, PassString),
     (   correct_password(PassString) ->
         retract(locker_state(locked)),
         assert(locker_state(unlocked)),
         update_turn,
-        write('咔哒一声，密码锁弹开了。你拉开柜门。'), nl,
+        write('Bingo, the locker is now unlocked. You opened the locker eagerly.'), nl,
         ( phone_in(locker),
           at(phone, locker) ->
             retract(at(phone, locker)),
             assert(at(phone, storage)),
-            write('在一排手机中，你一眼就认出了自己的那一部(phone)。'), nl
+            write('Your phone is here!'), nl
         ; true ),
-        write('柜子里目前还有：'), nl,
+        write('What\'s in this locker:'), nl,
         print_contents(locker),
         check_lose
-    ;   write('密码不对。'), nl
+    ;   write('Wrong Password!'), nl
     ),
     !.
 
 open(_) :-
-    write('你现在打不开这个东西。'), nl.
+    write('You can\'t open this thing.'), nl.
 
+% check password
 correct_password(PassString) :-
     locker_password(PassString).
 
+% use flashlight
 use(torch) :-
     holding(torch),
-    (   torch_on ->
+    (   torch_on -> % already on
         retract(torch_on),
-        write('你关掉了手电筒。'), nl
+        write('You have already turned on the flashlight.'), nl
     ;   assert(torch_on),
-        write('你打开了手电筒，视野一下子清晰了许多。'), nl,
+        write('With the flashlight on, you can see things better.'), nl,
         look
     ),
     !.
 
 use(torch) :-
-    write('你手上没有手电筒。'), nl.
+    write('You don\'t have the flashlight now.'), nl.
 
-/*--------------------------------------
-  回合 & 失败检测
-  --------------------------------------*/
+% game rules
 
 game_running :-
     \+ game_over, !.
 game_running :-
-    write('这局游戏已经结束了。'), nl,
-    write('请先输入 start. 开始新的一局，或者输入 halt. 退出。'), nl,
+    write('Game\'s over.'), nl,
+    write('To start a new game, type start. Or use halt. to exit.'), nl,
     fail.
 
+% check guard can move this turn
 should_guard_move(Turn) :-
     guard_last_moved_turn(Last),
     (   guard_at(corridor)
     ->  Turn > Last
-    ;   Turn >= Last + 3
+    ;   Turn >= Last + 3 % guard in other rooms needs to freeze for 3 rounds
     ),
     retract(guard_last_moved_turn(Last)),
     assert(guard_last_moved_turn(Turn)).
@@ -631,31 +632,31 @@ update_turn :-
 check_lose :-
     turn(T),
     T > 60, !,
-    lose('你在教学楼里摸索得太久，天色已经发白，楼下传来开门声……').
+    lose('You\'ve stayed too long in the teaching building, it\'s now morning and teachers are coming......').
 check_lose :- true.
 
-/*--------------------------------------
-  守卫（巡逻 + 追捕）
-  --------------------------------------*/
+% === Adversary Logic ===
 
-% ✅ 修改点2：只有“玩家在教学楼内(不含 gate) 且拿着 phone”才 chaser
+% only chases player in the building
 player_in_building :-
     i_am_at(R),
     R \= gate.
 
+% swith to chaser mode if player has phone and is in building
 current_guard_mode(chaser) :-
     holding(phone),
     player_in_building, !.
+% initialize as patrol mode
 current_guard_mode(patrol).
 
 adversary_step :-
     game_over, !.
 adversary_step :-
     current_guard_mode(Mode),
-    maybe_update_guard_mode(Mode),
+    maybe_update_guard_mode(Mode), % check for possible update
     (   Mode = patrol
-    ->  guard_patrol_step
-    ;   plan_for_guard(chaser, Plan),
+    ->  guard_patrol_step % patrol step
+    ;   plan_for_guard(chaser, Plan), % pddl
         execute_guard_action(Plan)
     ).
 
@@ -665,6 +666,7 @@ maybe_update_guard_mode(Mode) :-
     retractall(guard_mode(_)),
     assert(guard_mode(Mode)).
 
+% patrol route
 patrol_route([
     security,
     corridor,
@@ -676,15 +678,14 @@ patrol_route([
     corridor
 ]).
 
-% ✅ 守卫随机出生（对“不同房间”均匀随机），巡逻路线不变
+% random spawn spot
 init_guard_random :-
     patrol_route(Route),
 
-    % UniqueRooms: 去重后的房间列表（每个房间等概率）
     sort(Route, UniqueRooms),
     random_member(StartRoom, UniqueRooms),
 
-    % StartRoom 在 Route 中可能出现多次（例如 corridor），随机选一个对应的下标作为 patrol_index
+    % pick random room
     findall(I, nth0(I, Route, StartRoom), Indices),
     random_member(StartI, Indices),
 
@@ -707,6 +708,7 @@ guard_patrol_step :-
     !.
 guard_patrol_step :- true.
 
+% update pddl problem
 write_chaser_problem(File) :-
     i_am_at(PRoom),
     guard_at(GRoom),
@@ -734,6 +736,7 @@ write_chaser_problem(File) :-
     format(Out, ")~n", []),
     close(Out).
 
+% solve pddl problem
 plan_for_guard(chaser, Plan) :-
     pyperplan_exe(ExeRel),
     pyperplan_domain(DomainRel),
@@ -751,6 +754,7 @@ plan_for_guard(chaser, Plan) :-
 
 execute_guard_action([]) :- !.
 execute_guard_action([Action | Rest]) :-
+    % execute first action of the plan
     write('DEBUG: Executing guard action:'), write(Action), nl,
     write('DEBUG:Remaining plan:'), write(Rest), nl,
     (   Action = move_guard(From, To) ->
@@ -765,16 +769,20 @@ execute_move_guard(From, To) :-
     !.
 execute_move_guard(_, _) :- true.
 
+% catch player
+% chaser
 execute_catch_player(planner) :-
     retractall(last_guard_moved),
-    lose('你被值班老师发现了：他径直朝你走来，把你逮了个正着。').
+    lose('You have been caught by the guard!').
 
+% patrol
 execute_catch_player(guard_move) :-
     retractall(last_guard_moved),
-    lose('你被值班老师发现了：他巡逻到这里时，正好看见了你。').
+    lose('The guard found you on his patrol!').
 
+% player entered the room where the guard is
 execute_catch_player(player_move) :-
-    lose('你刚走进房间，就和正在巡逻的值班老师迎面撞上了。').
+    lose('You walked straight into the guard!').
 
 check_guard_catch_player :-
     i_am_at(Room),
@@ -794,11 +802,9 @@ check_guard_catch_player :-
     ).
 check_guard_catch_player :- true.
 
-/*--------------------------------------
-  escape / win / lose
-  --------------------------------------*/
+% === Escape Logic ===
 
-% ✅ 让 item_back_ok/2 支持第二参数为“单个位置”或“位置列表”
+% check if all the items are back to good places
 item_back_ok(Item, GoodPlace) :-
     \+ holding(Item),
     (   \+ at(Item, _)
@@ -808,54 +814,56 @@ item_back_ok(Item, GoodPlace) :-
         )
     ).
 
-bad_keys :-
+% keys missing
+missing_keys :-
     \+ item_back_ok(office_key, corridor)
  ;  \+ item_back_ok(storage_key, [desk, office])
  ;  \+ item_back_ok(notebook, [desk, office]).
 
-bad_doors :-
+% doors left unocked
+unlocked_doors :-
     door_state(office, unlocked)
  ;  door_state(storage, unlocked).
-
-bad_forbidden_items :-
+% missing confiscated items
+missing_confiscated_items :-
     ( holding(Item),
-      ( forbidden_comic(Item)
-      ; forbidden_phone(Item)
+      ( confiscated_comic(Item)
+      ; confiscated_phones(Item)
       )
     )
- ;  ( forbidden_comic(C), \+ at(C, drawer) )
- ;  ( forbidden_phone(P), \+ at(P, locker) ).
+ ;  ( confiscated_comic(C), \+ at(C, drawer) )
+ ;  ( confiscated_phones(P), \+ at(P, locker) ).
 
 escape :-
     game_running,
     i_am_at(gate),
-    bad_keys, !,
-    lose('第二天老师发现钥匙或密码本不在平时的位置，觉得非常可疑，最后查到了你头上。').
+    missing_keys, !,
+    lose('The second day, the keys are missing and the teacher found out it was you.').
 
 escape :-
     game_running,
     i_am_at(gate),
-    bad_forbidden_items, !,
-    lose('第二天老师清点被没收的物品时发现数量不对或摆放位置异常，你很快就成为最大嫌疑人。').
+    missing_confiscated_items, !,
+    lose('The second day, the teacher found out the confiscated items are missing, and somehow knew it was you.').
 
 escape :-
     game_running,
     i_am_at(gate),
-    bad_doors, !,
-    lose('你离开后，有老师发现办公室或储物室的门没有上锁，立刻起了疑心，很快查到了你头上。').
+    unlocked_doors, !,
+    lose('One of the teachers noticed that the doors are left unlocked, you were soon considered to be the biggest suspect.').
 
 escape :-
     game_running,
     i_am_at(gate),
     ( win_condition ->
         win
-    ;   write('你总觉得还有什么没处理好，现在离开太冒险了。'), nl
+    ;   write('It\'s too dangerous to leave right now. There must be something you haven\'t done yet.'), nl
     ),
     !.
 
 escape :-
     game_running,
-    write('你现在还不在可以离开的地方。'), nl.
+    write('You can\'t leave now.'), nl.
 
 win_condition :-
     holding(phone),
@@ -869,21 +877,15 @@ win_condition :-
 win :-
     assert(game_over),
     nl,
-    write('你抱着自己的手机，悄悄回到了楼梯间(gate)。'), nl,
-    write('你确认备用机已经放回原来的位置，一切看起来和之前没有任何区别。'), nl,
-    write('第二天早晨，老师打开抽屉/柜子，只看到"一部"手机安静地躺在那里。'), nl,
-    write('而你，正坐在教室里若无其事地刷着屏幕。'), nl, nl,
-    write('—— 完美脱身。'), nl,
-    write('游戏结束，如需再玩一局，请输入 start. 重新开始，或输入 halt. 退出 Prolog。'), nl.
+    write('You have obtained your phone and escaped from the gate.'), nl,
+    write('No one will ever know that you have swapped your smartphone with a dummy phone.'), nl,
+    write('The second day, the teacher checked all the confiscated items as regular, and found nothing wrong.'), nl, nl,
+    write('-- Perfect Escape'), nl,
+    write('End of the game, enter start. for a new game, or use halt. to exit Prolog.'), nl.
 
 lose(Reason) :-
     assert(game_over),
     nl,
-    write('你失败了：'), nl,
+    write('You failed:'), nl,
     write(Reason), nl, nl,
-    write('游戏结束，如需再玩一局，请输入 start. 重新开始，或输入 halt. 退出 Prolog。'), nl.
-
-where_is_guard :-
-    guard_at(R),
-    turn(T),
-    format('回合 ~w：守卫在 ~w~n', [T, R]).
+    write('End of the game, enter start. for a new game, or use halt. to exit Prolog.'), nl.

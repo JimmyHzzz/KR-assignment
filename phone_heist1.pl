@@ -1,7 +1,7 @@
 /*
    启动游戏方式：
     set_prolog_flag(encoding, utf8).
-    consult('E:/KR-assignment/phone_heist1.pl').
+    consult('phone_heist1.pl').
     start.
 */
 
@@ -34,14 +34,11 @@ pyperplan_domain('adversary_domain.pddl').
     phone_in/1,       % phone_in(drawer) 或 phone_in(locker)
     visited/1,        % 经过走廊不重复提醒
     game_over/0,      % 判断是否已经结束
-    guard1_at/1,       % 守卫当前位置
-    guard1_mode/1,     % 守卫模式: patrol 或 chaser
-    guard1_last_moved_turn/1,  % 守卫上一次行动的回合
-    last_guard1_moved/0,       % 本回合守卫是否刚刚行动过
-    guard1_patrol_index/1,     % 守卫当前在巡逻路线中的第几步
-    guard2_at/1,                 % guard2 当前位置（只在 security/storage）
-    guard2_last_moved_turn/1,     % guard2 上一次行动回合
-    last_guard2_moved/0,          % 本回合 guard2 是否刚行动过（可选）
+    guard_at/2,       % guard_at(ID, 位置)
+    guard_mode/2,     % guard_mode(ID, patrol/chaser)
+    guard_last_moved_turn/2,  % guard_last_moved_turn(ID, 回合)
+    last_guard_moved/1,       % last_guard_moved(ID)
+    guard_patrol_index/2,     % guard_patrol_index(ID, Index)
     alarm_on/0.                   % 手机被拿走报警是否触发
 
 :- discontiguous take/1.
@@ -113,14 +110,11 @@ reset_game_state :-
     retractall(visited(_)),
     retractall(game_over),
 
-    retractall(guard1_at(_)),
-    retractall(guard1_mode(_)),
-    retractall(guard1_patrol_index(_)),
-    retractall(guard1_last_moved_turn(_)),
-    retractall(last_guard1_moved),
-    retractall(guard2_at(_)),
-    retractall(guard2_last_moved_turn(_)),
-    retractall(last_guard2_moved),
+    retractall(guard_at(_, _)),
+    retractall(guard_mode(_, _)),
+    retractall(guard_patrol_index(_, _)),
+    retractall(guard_last_moved_turn(_, _)),
+    retractall(last_guard_moved(_)),
     retractall(alarm_on),
 
     init_world,
@@ -141,10 +135,11 @@ init_world :-
     assert(locker_password(PassStr)),
 
     assert(turn(0)),
-    assert(guard1_last_moved_turn(0)),
-     % ✅ guard2 初始在值班室，每 8 回合行动一次
-    assert(guard2_at(security)),
-    assert(guard2_last_moved_turn(0)),
+    assert(guard_last_moved_turn(guard1, 0)),
+    assert(guard_last_moved_turn(guard2, 0)),
+    init_guard_random(guard1),
+    assert(guard_at(guard2, security)),
+    assert(guard_mode(guard2, patrol)),
 
     assert(at(mat, corridor)),
     assert(at(desk, office)),
@@ -160,7 +155,7 @@ init_world :-
     assert(at(storage_key, desk)),
     assert(at(notebook, desk)),
 
-    init_guard1_random.
+    init_guard_random(guard1).
 
 init_phone_location :-
     random_between(0, 1, R),
@@ -170,6 +165,19 @@ init_phone_location :-
     ;   assert(phone_in(locker)),
         assert(at(phone, locker))
     ).
+
+/*--------------------------------------
+  多守卫随机出生点初始化
+  --------------------------------------*/
+init_guard_random(GuardID) :-
+    patrol_route(Route),
+    sort(Route, UniqueRooms),
+    random_member(StartRoom, UniqueRooms),
+    findall(I, nth0(I, Route, StartRoom), Indices),
+    random_member(StartI, Indices),
+    assert(guard_at(GuardID, StartRoom)),
+    assert(guard_patrol_index(GuardID, StartI)),
+    assert(guard_mode(GuardID, patrol)).
 
 /*--------------------------------------
   地图：path/2
@@ -321,15 +329,15 @@ wait :-
 
 listen :-
     game_running,
-
-    (   guard1_at(Room1)
-    ->  current_guard1_mode(Mode1),
+    % --- guard1 ---
+    (   guard_at(guard1, Room1)
+    ->  guard_mode(guard1, Mode1),
         (   Mode1 = patrol
         ->  turn(N1),
             NextTurn1 is N1 + 1,
-            guard1_last_moved_turn(Last1),
+            guard_last_moved_turn(guard1, Last1),
             patrol_route(Route),
-            guard1_patrol_index(I1),
+            guard_patrol_index(guard1, I1),
             length(Route, Len1),
             NextI1 is (I1 + 1) mod Len1,
             nth0(NextI1, Route, NextRoom1),
@@ -354,15 +362,12 @@ listen :-
         )
     ;   true
     ),
-
-    % =========================
-    % guard2（新增）
-    % =========================
+    % --- guard2 ---
     (   player_in_building,
-        guard2_at(Room2)
+        guard_at(guard2, Room2)
     ->  turn(N2),
         NextTurn2 is N2 + 1,
-        guard2_last_moved_turn(Last2),
+        guard_last_moved_turn(guard2, Last2),
         (   Room2 = security
         ->  (   NextTurn2 >= Last2 + 8
             ->  write('你听到值班室(security)方向传来轻微的动静，像是有人正准备朝储物室(storage)走去。'), nl
@@ -374,8 +379,7 @@ listen :-
         )
     ;   true
     ),
-
-    (   guard1_at(_) ; guard2_at(_)
+    (   guard_at(guard1, _) ; guard_at(guard2, _)
     ->  true
     ;   write('教学楼一片寂静，你暂时没有察觉到其他人的动静。'), nl
     ).
@@ -664,41 +668,84 @@ game_running :-
     write('请先输入 start. 开始新的一局，或者输入 halt. 退出。'), nl,
     fail.
 
-should_guard1_move(Turn) :-
-    guard1_last_moved_turn(Last),
-    (   guard1_at(corridor)
+% --- 统一守卫回合推进与移动 ---
+should_guard_move(guard1, Turn) :-
+    guard_last_moved_turn(guard1, Last),
+    (   guard_at(guard1, corridor)
     ->  Turn > Last
     ;   Turn >= Last + 3
     ),
-    retract(guard1_last_moved_turn(Last)),
-    assert(guard1_last_moved_turn(Turn)).
+    retract(guard_last_moved_turn(guard1, Last)),
+    assert(guard_last_moved_turn(guard1, Turn)).
+should_guard_move(guard2, Turn) :-
+    guard_last_moved_turn(guard2, Last),
+    guard_at(guard2, Pos),
+    (   Pos = storage
+    ->  Turn > Last
+    ;   Turn >= Last + 8
+    ),
+    retract(guard_last_moved_turn(guard2, Last)),
+    assert(guard_last_moved_turn(guard2, Turn)).
 
 update_turn :-
     retract(turn(N)),
     N1 is N + 1,
     assert(turn(N1)),
-    (   should_guard1_move(N1)
-    ->  retractall(last_guard1_moved),
-        assert(last_guard1_moved),
+    (   should_guard_move(guard1, N1)
+    ->  retractall(last_guard_moved(guard1)),
+        assert(last_guard_moved(guard1)),
         adversary_step
-    ;   retractall(last_guard1_moved)
+    ;   retractall(last_guard_moved(guard1))
     ),
-        % --- ✅ guard2 ---
-    (   should_guard2_move(N1)
-    ->  retractall(last_guard2_moved),
-        assert(last_guard2_moved),
+    (   should_guard_move(guard2, N1)
+    ->  retractall(last_guard_moved(guard2)),
+        assert(last_guard_moved(guard2)),
         guard2_step,
         guard2_handle_alarm
-    ;   retractall(last_guard2_moved)
+    ;   retractall(last_guard_moved(guard2))
     ),
-
     check_guard1_catch_player.
 
-check_lose :-
+% --- 统一守卫巡逻 ---
+guard_patrol_step(GuardID) :-
+    guard_patrol_index(GuardID, I),
+    patrol_route(Route),
+    length(Route, Len),
+    nth0(I, Route, From),
+    NextI is (I + 1) mod Len,
+    nth0(NextI, Route, To),
+    guard_at(GuardID, From),
+    retract(guard_at(GuardID, From)),
+    assert(guard_at(GuardID, To)),
+    retract(guard_patrol_index(GuardID, I)),
+    assert(guard_patrol_index(GuardID, NextI)),
+    !.
+guard_patrol_step(_) :- true.
+
+% --- 统一守卫抓捕检测 ---
+check_guard1_catch_player :-
+    i_am_at(Room),
+    guard_at(guard1, Room),
+    !,
+    guard_mode(guard1, Mode),
+    (   Mode = patrol
+    ->  (   last_guard_moved(guard1)
+        ->  execute_catch_player(guard1_move)
+        ;   execute_catch_player(player_move)
+        )
+    ;   Mode = chaser
+    ->  (   last_guard_moved(guard1)
+        ->  execute_catch_player(planner)
+        ;   execute_catch_player(player_move)
+        )
+    ).
+check_guard1_catch_player :- true.
+
+% --- 统一守卫位置查询 ---
+where_is_guard(GuardID) :-
+    guard_at(GuardID, R),
     turn(T),
-    T > 60, !,
-    lose('你在教学楼里摸索得太久，天色已经发白，楼下传来开门声……').
-check_lose :- true.
+    format('回合 ~w：守卫(~w)在 ~w~n', [T, GuardID, R]).
 
 /*--------------------------------------
   守卫（巡逻 + 追捕）
@@ -707,27 +754,35 @@ check_lose :- true.
 % - 在 security：至少隔 8 回合才行动一次
 % - 在 storage：只停 1 回合，下一回合必回 security
 should_guard2_move(Turn) :-
-    guard2_last_moved_turn(Last),
-    guard2_at(Pos),
+    guard_last_moved_turn(guard2, Last),
+    guard_at(guard2, Pos),
     (   Pos = storage
     ->  Turn > Last
     ;   Turn >= Last + 8
     ),
-    retract(guard2_last_moved_turn(Last)),
-    assert(guard2_last_moved_turn(Turn)).
+    retract(guard_last_moved_turn(guard2, Last)),
+    assert(guard_last_moved_turn(guard2, Turn)).
 
 % ✅ guard2 一步巡逻：只在 security <-> storage 之间往返
-guard2_step :-
-    guard2_at(security),
-    retract(guard2_at(security)),
-    assert(guard2_at(storage)),
+guard_step(guard2) :-
+    guard_at(guard2, security),
+    retract(guard_at(guard2, security)),
+    assert(guard_at(guard2, storage)),
     !.
-guard2_step :-
-    guard2_at(storage),
-    retract(guard2_at(storage)),
-    assert(guard2_at(security)),
+guard_step(guard2) :-
+    guard_at(guard2, storage),
+    retract(guard_at(guard2, storage)),
+    assert(guard_at(guard2, security)),
     !.
-guard2_step :- true.
+guard_step(guard2) :- true.
+
+% --- 统一守卫报警处理 ---
+guard_handle_alarm(guard2) :-
+    alarm_on,
+    guard_at(guard2, security),
+    write('【警报】值班室响起提示音：有人动了手机柜/抽屉。guard2 立刻通知楼内巡逻的值班老师！'), nl,
+    !.
+guard_handle_alarm(_) :- true.
 
 % ✅ guard2 在 security 接警并“通知”主保安（叙事提示）
 guard2_handle_alarm :-
@@ -737,111 +792,40 @@ guard2_handle_alarm :-
     !.
 guard2_handle_alarm :- true.
 
-
 % ✅ 修改点2：只有“玩家在教学楼内(不含 gate) 且拿着 phone”才 chaser
 player_in_building :-
     i_am_at(R),
     R \= gate.
 
-current_guard1_mode(chaser) :-
+current_guard_mode(guard1, chaser) :-
     holding(phone),
     player_in_building, !.
-current_guard1_mode(patrol).
+current_guard_mode(guard1, patrol).
+current_guard_mode(guard2, patrol).
+
+maybe_update_guard_mode(GuardID, Mode) :-
+    guard_mode(GuardID, Mode), !.
+maybe_update_guard_mode(GuardID, Mode) :-
+    retractall(guard_mode(GuardID, _)),
+    assert(guard_mode(GuardID, Mode)).
 
 adversary_step :-
     game_over, !.
 adversary_step :-
-    current_guard1_mode(Mode),
-    maybe_update_guard1_mode(Mode),
+    current_guard_mode(guard1, Mode),
+    maybe_update_guard_mode(guard1, Mode),
     (   Mode = patrol
-    ->  guard1_patrol_step
-    ;   plan_for_guard1(chaser, Plan),
-        execute_guard1_action(Plan)
+    ->  guard_patrol_step(guard1)
+    ;   plan_for_guard(chaser, guard1, Plan),
+        execute_guard_action(guard1, Plan)
     ).
 
-maybe_update_guard1_mode(Mode) :-
-    guard1_mode(Mode), !.
-maybe_update_guard1_mode(Mode) :-
-    retractall(guard1_mode(_)),
-    assert(guard1_mode(Mode)).
-
-patrol_route([
-    security,
-    corridor,
-    storage,
-    corridor,
-    classroom,
-    corridor,
-    office,
-    corridor
-]).
-
-% ✅ 守卫随机出生（对“不同房间”均匀随机），巡逻路线不变
-init_guard1_random :-
-    patrol_route(Route),
-
-    % UniqueRooms: 去重后的房间列表（每个房间等概率）
-    sort(Route, UniqueRooms),
-    random_member(StartRoom, UniqueRooms),
-
-    % StartRoom 在 Route 中可能出现多次（例如 corridor），随机选一个对应的下标作为 patrol_index
-    findall(I, nth0(I, Route, StartRoom), Indices),
-    random_member(StartI, Indices),
-
-    assert(guard1_at(StartRoom)),
-    assert(guard1_mode(patrol)),
-    assert(guard1_patrol_index(StartI)).
-
-guard1_patrol_step :-
-    guard1_patrol_index(I),
-    patrol_route(Route),
-    length(Route, Len),
-    nth0(I, Route, From),
-    NextI is (I + 1) mod Len,
-    nth0(NextI, Route, To),
-    guard1_at(From),
-    retract(guard1_at(From)),
-    assert(guard1_at(To)),
-    retract(guard1_patrol_index(I)),
-    assert(guard1_patrol_index(NextI)),
-    !.
-guard1_patrol_step :- true.
-
-write_chaser_problem(File) :-
-    i_am_at(PRoom),
-    guard1_at(GRoom),
-    open(File, write, Out),
-    format(Out, "(define (problem phone-heist-chaser-dyn)~n", []),
-    format(Out, "  (:domain phone-heist-adversary)~n~n", []),
-    format(Out, "  (:objects~n", []),
-    format(Out, "    gate corridor office classroom storage security - location~n", []),
-    format(Out, "  )~n~n", []),
-    format(Out, "  (:init~n", []),
-    format(Out, "    (guard1-at ~w)~n", [GRoom]),
-    format(Out, "    (player-at ~w)~n", [PRoom]),
-    format(Out, "    (adj gate corridor)~n", []),
-    format(Out, "    (adj corridor gate)~n", []),
-    format(Out, "    (adj corridor office)~n", []),
-    format(Out, "    (adj office corridor)~n", []),
-    format(Out, "    (adj corridor classroom)~n", []),
-    format(Out, "    (adj classroom corridor)~n", []),
-    format(Out, "    (adj corridor storage)~n", []),
-    format(Out, "    (adj storage corridor)~n", []),
-    format(Out, "    (adj storage security)~n", []),
-    format(Out, "    (adj security storage)~n", []),
-    format(Out, "  )~n~n", []),
-    format(Out, "  (:goal (guard1-at ~w))~n", [PRoom]),
-    format(Out, ")~n", []),
-    close(Out).
-
-plan_for_guard1(chaser, Plan) :-
+plan_for_guard(chaser, guard1, Plan) :-
     pyperplan_exe(ExeRel),
     pyperplan_domain(DomainRel),
-
     project_file(ExeRel, ExeAbs),
     project_file(DomainRel, DomainAbs),
     project_file('adversary_problem.pddl', DynProblemAbs),
-
     write('DEBUG: writing dynamic chaser problem: '), writeln(DynProblemAbs),
     write_chaser_problem(DynProblemAbs),
     write('DEBUG: calling pyperplan...'), nl,
@@ -849,50 +833,32 @@ plan_for_guard1(chaser, Plan) :-
           Error,
           ( write('DEBUG: pyperplan error: '), writeln(Error), Plan = [] )).
 
-execute_guard1_action([]) :- !.
-execute_guard1_action([Action | Rest]) :-
+execute_guard_action(_, []) :- !.
+execute_guard_action(guard1, [Action | Rest]) :-
     write('DEBUG: Executing guard1 action:'), write(Action), nl,
     write('DEBUG:Remaining plan:'), write(Rest), nl,
     (   Action = move_guard1(From, To) ->
-        execute_move_guard1(From, To)
+        execute_move_guard(guard1, From, To)
     ;   true
     ).
 
-execute_move_guard1(From, To) :-
-    guard1_at(From),
-    retract(guard1_at(From)),
-    assert(guard1_at(To)),
+execute_move_guard(GuardID, From, To) :-
+    guard_at(GuardID, From),
+    retract(guard_at(GuardID, From)),
+    assert(guard_at(GuardID, To)),
     !.
-execute_move_guard1(_, _) :- true.
+execute_move_guard(_, _, _) :- true.
 
 execute_catch_player(planner) :-
-    retractall(last_guard1_moved),
+    retractall(last_guard_moved(guard1)),
     lose('你被值班老师发现了：他径直朝你走来，把你逮了个正着。').
 
 execute_catch_player(guard1_move) :-
-    retractall(last_guard1_moved),
+    retractall(last_guard_moved(guard1)),
     lose('你被值班老师发现了：他巡逻到这里时，正好看见了你。').
 
 execute_catch_player(player_move) :-
     lose('你刚走进房间，就和正在巡逻的值班老师迎面撞上了。').
-
-check_guard1_catch_player :-
-    i_am_at(Room),
-    guard1_at(Room),
-    !,
-    current_guard1_mode(Mode),
-    (   Mode = patrol
-    ->  (   last_guard1_moved
-        ->  execute_catch_player(guard1_move)
-        ;   execute_catch_player(player_move)
-        )
-    ;   Mode = chaser
-    ->  (   last_guard1_moved
-        ->  execute_catch_player(planner)
-        ;   execute_catch_player(player_move)
-        )
-    ).
-check_guard1_catch_player :- true.
 
 /*--------------------------------------
   escape / win / lose
